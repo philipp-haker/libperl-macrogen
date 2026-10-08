@@ -240,6 +240,13 @@ impl<'a, R: IdentResolver> Lexer<'a, R> {
         };
 
         match c {
+            // Only accept \r right before \n
+            b'\r' if matches!(self.peek_n(1), Some(b'\n')) => {
+                // Eat both tokens
+                self.advance();
+                self.advance();
+                Ok(TokenKind::Newline)
+            }
             // 改行（プリプロセッサのために独立したトークンとして扱う）
             b'\n' => {
                 self.advance();

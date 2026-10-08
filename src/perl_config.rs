@@ -215,6 +215,47 @@ pub fn get_perl_version() -> Result<(u32, u32), PerlConfigError> {
     Ok((major, minor))
 }
 
+/// Get the compiler's built-in defines (`-dM` dump).
+/// 
+/// On Windows, `Config{cppsymbols}` is empty (Win32 perl does not run Configure),
+/// and `_WIN32` / `__MINGW32__` / `__GNUC__`etc. are only defined as compiler built-ins.
+/// System headers (e.g. the  `#error` guard in mingw-w64's `sys/types.h`) require these, so we mirror the built-ins of `CC` (default `cc`).
+fn builtin_defines() -> Vec<(String, Option<String>)> {
+    const DYNAMIC: [&str; 5] =
+        ["__DATE__", "__FILE__", "__TIME__", "__TIMESTAMP__", "__INCLUDE_LEVEL__"];
+    let cc = std::env::var("CC").unwrap_or_else(|_| {
+        eprintln!("Env CC not defined; using default exe name >cc<");
+        "cc".to_string()
+    });
+    let Ok(output) = Command::new(&cc)
+        .args(["-dM", "-E", "-x", "c", "-"])
+        .stdin(std::process::Stdio::null())
+        .output().inspect_err(|e| {
+            eprintln!("Error running >{cc}<.\n{e}");
+        })
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        eprintln!("Error running >{cc}<. Exited with code {:?}", output.status.code());
+        return Vec::new();
+    }
+    let mut defs = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Some(rest) = line.strip_prefix("#define ") else { continue };
+        let (name, value) = match rest.split_once(' ') {
+            Some((n, v)) => (n, Some(v)),
+            None => (rest, None),
+        };
+        // Dynamic macros and function-like macros are excluded.
+        if DYNAMIC.contains(&name) || name.contains('(') {
+            continue;
+        }
+        defs.push((name.to_string(), value.map(|s| s.to_string())));
+    }
+    defs
+}
+
 /// Perl Config.pm から設定を取得
 pub fn get_perl_config() -> Result<PerlConfig, PerlConfigError> {
     // インクルードパスを取得
@@ -243,6 +284,14 @@ pub fn get_perl_config() -> Result<PerlConfig, PerlConfigError> {
             } else {
                 defines.push((name, value));
             }
+        }
+    }
+
+    // Add the compiler's built-in defines (_WIN32 / __MINGW32__/ __GNUC__, etc.).
+    // Explicit definitions (cppsymbols / ccopts) take precedence.
+    for (name, value) in builtin_defines() {
+        if !defines.iter().any(|(n, _)| n == &name) {
+            defines.push((name, value));
         }
     }
 

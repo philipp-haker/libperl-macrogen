@@ -844,6 +844,13 @@ impl Preprocessor {
         };
 
         match c {
+            // Only accept \r right before \n (CRLF headers, e.g. Windows-built perl)
+            b'\r' if matches!(source.peek_n(1), Some(b'\n')) => {
+                source.advance();
+                source.advance();
+                Ok(TokenKind::Newline)
+            }
+
             b'\n' => {
                 source.advance();
                 Ok(TokenKind::Newline)
@@ -1300,48 +1307,76 @@ impl Preprocessor {
             loc
         };
 
-        let first_char = {
+        let (first_char, second_char) = {
             let source = self.sources.last().unwrap();
-            source.peek()
+            (source.peek(), source.peek_n(1))
         };
 
-        let value = match first_char {
-            Some(b'\'') => {
+        let value = match (first_char, second_char) {
+            (Some(b'\''), _) => {
                 return Err(CompileError::Lex {
                     loc,
                     kind: crate::error::LexError::EmptyCharLit,
                 });
             }
-            Some(b'\\') => {
+            (Some(b'\\'), _) => {
                 {
                     let source = self.sources.last_mut().unwrap();
                     source.advance();
                 }
                 self.scan_escape_sequence(&loc)?
             }
-            Some(c) => {
-                let source = self.sources.last_mut().unwrap();
-                source.advance();
-                c
-            }
-            None => {
+            (None, _) | (Some(b'\n'), _) | (Some(b'\r'), Some(b'\n')) => {
                 return Err(CompileError::Lex {
                     loc,
                     kind: crate::error::LexError::UnterminatedChar,
                 });
+            },
+            (Some(c), _) => {
+                let source = self.sources.last_mut().unwrap();
+                source.advance();
+                c
             }
         };
 
-        let source = self.sources.last_mut().unwrap();
-        if source.peek() != Some(b'\'') {
-            return Err(CompileError::Lex {
-                loc,
-                kind: crate::error::LexError::UnterminatedChar,
-            });
+        // Multi char.
+        // Gcc shifts previous value, then sets lower bits to newly discovered value.
+        // int x = 'A'  ;   // <- 0x41
+        // int x = 'AB' ;   // <- 0x00004142
+        // int x = 'ABC';   // <- 0x00414243
+        let mut char_count = 1u32;
+        let mut multi_value = value as u32;
+        loop {
+            let source = self.sources.last_mut().unwrap();
+            match (source.peek(), source.peek_n(1)) {
+                (Some(b'\''), _) => {
+                    break;
+                },
+                (None, _) | (Some(b'\n'), _) | (Some(b'\r'), Some(b'\n')) => {
+                    return Err(CompileError::Lex {
+                        loc,
+                        kind: crate::error::LexError::UnterminatedChar,
+                    });
+                },
+                (Some(c), _) => {
+                    source.advance();
+                    let c = if c == b'\\' {
+                        self.scan_escape_sequence(&loc)?
+                    } else {
+                        c
+                    };
+                    multi_value = (multi_value << 8) | (c as u32);
+                    char_count += 1;
+                }
+            };
         }
-        source.advance();
+        self.sources.last_mut().unwrap().advance();
 
-        Ok(TokenKind::CharLit(value))
+        Ok(if char_count == 1 {
+            TokenKind::CharLit(value)
+        } else {
+            TokenKind::IntLit(multi_value as i32 as i64)
+        })
     }
 
     /// ワイド文字をスキャン

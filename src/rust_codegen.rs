@@ -1222,7 +1222,7 @@ impl CodegenConfig {
         vec![
             // 生成コードで実際に参照されない type alias / import が出ても
             // CI の `-D warnings` で落ちないよう dead_code / unused_imports を allow。
-            "#[allow(unused_imports)] use std::ffi::{c_void, c_char, c_uchar, c_int, c_uint, c_long, c_ulong, c_short, c_ushort}".to_string(),
+            "#[allow(unused_imports)] use std::ffi::{c_void, c_char, c_uchar, c_int, c_uint, c_long, c_ulong, c_short, c_ushort, c_longlong, c_ulonglong}".to_string(),
             "#[allow(non_camel_case_types, dead_code)] type size_t = usize".to_string(),
             "#[allow(non_camel_case_types, dead_code)] type ssize_t = isize".to_string(),
             "#[allow(non_camel_case_types, dead_code)] type SSize_t = isize".to_string(),

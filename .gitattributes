@@ -1,0 +1,5 @@
+# Fixes for type inference tests on windows.
+# The expected files are checked out as CRLF if not configured otherwise.
+# That will lead to problems once they are checked against a printing implementation that uses only LF. 
+tests/type_inference/*  text eol=lf
+tests/expected_rust/*   text eol=lf

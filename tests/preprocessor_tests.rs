@@ -46,6 +46,21 @@ fn token_kinds(pp: &mut Preprocessor) -> Vec<TokenKind> {
     collect_tokens(pp).into_iter().map(|(k, _)| k).collect()
 }
 
+// Tests if multicharacter character literals get shifted correctly and overflow correctly
+#[test]
+fn test_multi_character_char_acc_and_overflow() {
+    for (input, output) in [
+        ("'A'",     TokenKind::CharLit(b'A')),
+        ("'AB'",    TokenKind::IntLit(0x4142)),
+        ("'ABC'",   TokenKind::IntLit(0x414243)),
+        ("'ABCD'",  TokenKind::IntLit(0x41424344)),
+        ("'ABCDE'", TokenKind::IntLit(0x42434445)),
+    ] {
+        let mut pp = preprocess(input);
+        assert_eq!(token_kinds(&mut pp).as_slice(), &[output]);
+    }
+}
+
 #[test]
 fn test_simple_tokens() {
     let mut pp = preprocess("int x;");
