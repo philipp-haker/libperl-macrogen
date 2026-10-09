@@ -4676,6 +4676,14 @@ impl<'a> RustCodegen<'a> {
     ) -> Option<syn::Expr> {
         use crate::syn_codegen::*;
 
+        // C: `(*s->fp)(args)` is the same call as `s->fp(args)`;
+        //dereferencing a function pointer is a no-op (e.g. PerlEnv_putenv under PERL_IMPLICIT_SYS).
+        // PERL_IMPLICITY_SYS is windows only
+        let func = match &func.kind {
+            ExprKind::Deref(inner) => inner.as_ref(),
+            _ => func
+        };
+
         let member_id = match &func.kind {
             ExprKind::Member { member, .. } | ExprKind::PtrMember { member, .. } => *member,
             _ => return None,
