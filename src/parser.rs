@@ -162,6 +162,8 @@ impl<'a, S: TokenSource> Parser<'a, S> {
         // GCC builtin types を事前登録
         let mut typedefs = HashSet::new();
         typedefs.insert(source.interner_mut().intern("__builtin_va_list"));
+        // GCC 13 bfloat16 (x86 AVX512-BF16 intrinsics, e.g. avx512bf16vlintrin.h)
+        typedefs.insert(source.interner_mut().intern("__bf16"));
 
         let mut parser = Self {
             source,
@@ -662,6 +664,10 @@ impl<'a, S: TokenSource> Parser<'a, S> {
         let loc = self.current.loc.clone();
         let mut derived = Vec::new();
 
+        // GCC extension: attributes at the start of a declarator,
+        // e.g. `int (__cdecl *fp)(void)` with __cdecl = __attribute__((__cdecl__))
+        self.try_skip_attribute()?;
+
         // ポインタ
         while self.check(&TokenKind::Star) {
             self.advance()?;
@@ -837,6 +843,11 @@ impl<'a, S: TokenSource> Parser<'a, S> {
                 TokenKind::KwAtomic => {
                     qualifiers.is_atomic = true;
                     self.advance()?;
+                }
+                // GCC extension: attributes in a pointer's qualifier list,
+                // e.g. `int * __attribute__((__cdecl__)) f(void)`(mingw-w64 `__cdecl`)
+                TokenKind::KwAttribute | TokenKind::KwAttribute2 => {
+                    self.skip_attribute()?;
                 }
                 _ => break,
             }
@@ -1657,7 +1668,7 @@ impl<'a, S: TokenSource> Parser<'a, S> {
             self.advance()?; // (
 
             // 1. 確定的な型名（キーワード/typedef/既検出の generic param）
-            if self.is_type_start() {
+            if self.is_type_name_start() {
                 return self.finish_parse_cast_or_compound_lit(loc);
             }
 
@@ -1930,7 +1941,7 @@ impl<'a, S: TokenSource> Parser<'a, S> {
                 self.advance()?;
                 if self.check(&TokenKind::LParen) {
                     self.advance()?; // (
-                    if self.is_type_start() {
+                    if self.is_type_name_start() {
                         // sizeof(type)
                         let type_name = self.parse_type_name()?;
                         self.expect(&TokenKind::RParen)?;
@@ -1953,10 +1964,10 @@ impl<'a, S: TokenSource> Parser<'a, S> {
                 self.expect(&TokenKind::RParen)?;
                 Ok(Expr::new(ExprKind::Alignof(Box::new(type_name)), loc))
             }
-            // GCC拡張: __extension__ は無視して続行（TinyCC方式）
+            // GCC extension: ignore __extension__ and continue (TinyCC style)
             TokenKind::KwExtension => {
                 self.advance()?;
-                self.parse_unary_expr()
+                self.parse_cast_expr()
             }
             _ => self.parse_postfix_expr(),
         }
@@ -2613,7 +2624,7 @@ impl<'a, S: TokenSource> Parser<'a, S> {
         let mut args = Vec::new();
         if !self.check(&TokenKind::RParen) {
             loop {
-                if self.is_type_start() {
+                if self.is_type_name_start() {
                     let type_name = self.parse_type_name()?;
                     args.push(BuiltinArg::TypeName(Box::new(type_name)));
                 } else {
@@ -2673,6 +2684,17 @@ impl<'a, S: TokenSource> Parser<'a, S> {
             }
             _ => false,
         }
+    }
+
+    /// Like `is_type_start`, but also accepts a leading GCC `__attribute__`.
+    /// Only for expression contexts after `(` (cast, compound literal, sizeof,
+    /// builtin args), where an attribute can only begin a type name,
+    /// e.g. `(__attribute__((__vector_size__(16))) int){4,1,2,3}` in xmmintrin.h.
+    fn is_type_name_start(&self) -> bool {
+        matches!(
+            self.current.kind,
+            TokenKind::KwAttribute | TokenKind::KwAttribute2
+        ) || self.is_type_start()
     }
 
     fn is_declaration_start(&self) -> bool {

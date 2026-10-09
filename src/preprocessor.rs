@@ -1072,6 +1072,10 @@ impl Preprocessor {
                     while source.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
                         source.advance();
                     }
+                    // Hex float, cause fml
+                    if matches!(source.peek(), Some(b'.') | Some(b'p') | Some(b'P')) {
+                        return self.scan_hex_float_from(start, loc)
+                    }
                 }
                 Some(b'b') | Some(b'B') => {
                     source.advance();
@@ -1102,7 +1106,11 @@ impl Preprocessor {
     }
 
     /// 浮動小数点数をスキャン
-    fn scan_float_from(&mut self, start: usize, loc: SourceLocation) -> Result<TokenKind, CompileError> {
+    fn scan_float_from(
+        &mut self,
+        start: usize,
+        loc: SourceLocation,
+    ) -> Result<TokenKind, CompileError> {
         let source = self.sources.last_mut().unwrap();
 
         if source.peek() == Some(b'.') {
@@ -1122,20 +1130,62 @@ impl Preprocessor {
             }
         }
 
-        if matches!(source.peek(), Some(b'f') | Some(b'F') | Some(b'l') | Some(b'L')) {
-            source.advance();
-        }
+        // Use new standalone function to parse float suffix
+        // As these are of variable length and prefixes of each other, i do it by keeping track of the length
+        let suffix_start = source.pos;
+        skip_float_suffix(source);
 
         let text = std::str::from_utf8(&source.source[start..source.pos]).unwrap();
-        let value: f64 = text
-            .trim_end_matches(|c| c == 'f' || c == 'F' || c == 'l' || c == 'L')
-            .parse()
-            .map_err(|_| CompileError::Lex {
-                loc: loc.clone(),
-                kind: crate::error::LexError::InvalidNumber(text.to_string()),
-            })?;
+        let number = std::str::from_utf8(&source.source[start..suffix_start]).unwrap();
+        let value: f64 = number.parse().map_err(|_| CompileError::Lex {
+            loc: loc.clone(),
+            kind: crate::error::LexError::InvalidNumber(text.to_string()),
+        })?;
 
         Ok(TokenKind::FloatLit(value))
+    }
+
+    /// Scans the rest of a hex float after `0x<hexdigits>`.
+    fn scan_hex_float_from(&mut self, start: usize, loc: SourceLocation) -> Result<TokenKind, CompileError> {
+        let source = self.sources.last_mut().unwrap();
+        let invalid = |source: &InputSource| CompileError::Lex {
+            loc: loc.clone(),
+            kind: crate::error::LexError::InvalidNumber(
+                String::from_utf8_lossy(&source.source[start..source.pos]).into_owned(),
+            ),
+        };
+
+        if source.peek() == Some(b'.') {
+            source.advance();
+            while source.peek().as_ref().is_some_and(u8::is_ascii_hexdigit) {
+                source.advance();
+            }
+        }
+
+        // The binary exponent is mandatory for hex floats.
+        if !matches!(source.peek(), Some(b'p') | Some(b'P')) {
+            return Err(invalid(source));
+        }
+        source.advance();
+        if matches!(source.peek(), Some(b'+') | Some(b'-')) {
+            source.advance();
+        }
+        let exp_start = source.pos;
+        while source.peek().as_ref().is_some_and(u8::is_ascii_digit) {
+            source.advance();
+        }
+        if source.pos == exp_start {
+            return Err(invalid(source));
+        }
+
+        let suffix_start = source.pos;
+        skip_float_suffix(source);
+
+        let number = std::str::from_utf8(&source.source[start..suffix_start]).unwrap();
+        match parse_hex_float(number) {
+            Some(value) => Ok(TokenKind::FloatLit(value)),
+            None => Err(invalid(source)),
+        }
     }
 
     /// 整数リテラルの仕上げ
@@ -3450,6 +3500,111 @@ impl Preprocessor {
     }
 }
 
+/// Utility function that parses suffixes that floats can have:
+/// f/F and l/L were already supported.
+/// Adding:
+/// - f16,  f32,  f64,  f128
+/// - f16x, f32x, f64x, f128x
+/// - bf16
+/// - q/Q
+/// - w/W
+fn skip_float_suffix(source: &mut InputSource) {
+    match source.peek() {
+        // These could be the short ones, the f__ or f__x suffixes
+        Some(b'f') | Some(b'F') => {
+            source.advance(); // f
+            // check if digit is next. fx is not allowed. There must be atleast one digit
+            if source.peek().as_ref().is_some_and(u8::is_ascii_digit) {
+                // Lazy: Skip all the digits instead of checking them.
+                // This will also skip the first, so I don't need separate advance
+                while source.peek().as_ref().is_some_and(u8::is_ascii_digit) {
+                    source.advance();
+                }
+                // At least one digit was present
+                // Optional x suffix
+                if matches!(source.peek(), Some(b'x') | Some(b'X')) {
+                    source.advance();
+                }
+            }
+        }
+        // This must be the bf16
+        Some(b'b') | Some(b'B') if matches!(source.peek_n(1), Some(b'f') | Some(b'F')) => {
+            source.advance(); // b
+            source.advance(); // f
+            // lazy: Skip all the digits instead of exactly 2
+            while source.peek().as_ref().is_some_and(u8::is_ascii_digit) {
+                source.advance();
+            }
+        }
+        // q/Q, w/W, l/L are all single character
+        Some(b'q') | Some(b'Q') | Some(b'w') | Some(b'W') | Some(b'l') | Some(b'L') => {
+            source.advance();
+        }
+        // Don't know what this might be
+        _ => {}
+    }
+}
+
+/// Parses the string representation of a hex float to an actual float.
+/// Mostly acurate
+fn parse_hex_float(s: &str) -> Option<f64> {
+    // Don't need the prefix. Also abort if not present.
+    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))?;
+    // Splitting
+    let (mantissa, exp) = s.split_once(['p', 'P'])?;
+    // 
+    let mut e: i64 = exp.parse().ok()?; 
+    // If a decimal point is provieded, split there.
+    // Otherwise everything is int part.
+    let (int_part, frac_part) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+
+    // If there was no (useful) mantissa, something went wrong
+    if int_part.is_empty() && frac_part.is_empty() {
+        return None;
+    }
+
+    let mut m: u64 = 0;
+    for c in int_part.chars() {
+        let d = c.to_digit(16)? as u64;
+        if m >> 60 == 0 {
+            m = (m << 4) | d;
+        } else {
+            e+= 4;
+        }
+    }
+
+    for c in frac_part.chars() {
+        let d = c.to_digit(16)? as u64;
+        if m >> 60 == 0 {
+            m = (m << 4) | d;
+            e -= 4;
+        }
+    }
+
+    // finally assembling this shit
+    let mut x = m as f64;
+    
+    // p-(sign p/m)-exponent
+    let pp1023 = f64::from_bits(0x7FE0_0000_0000_0000); // +2^1023
+    let pm1022 = f64::from_bits(0x0010_0000_0000_0000); // -2^1022
+
+    while e > 1023 {
+        x *= pp1023;
+        e -= 1023;
+        if x.is_infinite() { return Some(x); }
+    }
+
+    while e < -1022 {
+        x *= pm1022;
+        e+= 1022;
+        if x == 0.0 { return Some(x)}
+    }
+
+    Some(
+        x * f64::from_bits(((e + 1023) as u64) << 52)
+    )
+}
+
 /// TokenSource trait の実装
 ///
 /// Parser がプリプロセッサをトークンソースとして使用できるようにする
@@ -3510,6 +3665,19 @@ mod tests {
     /// キーワードがトークン列に含まれるかチェック
     fn has_keyword(tokens: &[Token], kind: TokenKind) -> bool {
         tokens.iter().any(|t| std::mem::discriminant(&t.kind) == std::mem::discriminant(&kind))
+    }
+
+    #[test]
+    fn test_parse_hex_float() {
+        assert_eq!(parse_hex_float("0x1.8p3"), Some(12.0));
+        assert_eq!(parse_hex_float("0x.8p1"), Some(1.0));
+        assert_eq!(parse_hex_float("0x1P+4"), Some(16.0));
+        assert_eq!(parse_hex_float("0x1p-1"), Some(0.5));
+        assert_eq!(parse_hex_float("0x1.fffffffffffffp1023"), Some(f64::MAX));
+        assert_eq!(parse_hex_float("0x1p-1022"), Some(f64::MIN_POSITIVE));
+        assert_eq!(parse_hex_float("0x1p-1074"), Some(f64::from_bits(1))); // smallest subnormal
+        assert_eq!(parse_hex_float("0x1p1024"), Some(f64::INFINITY));
+        assert_eq!(parse_hex_float("0x.p1"), None);
     }
 
     #[test]

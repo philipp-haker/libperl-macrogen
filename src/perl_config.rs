@@ -248,7 +248,7 @@ fn builtin_defines() -> Vec<(String, Option<String>)> {
             None => (rest, None),
         };
         // Dynamic macros and function-like macros are excluded.
-        if DYNAMIC.contains(&name) || name.contains('(') {
+        if DYNAMIC.contains(&name) /* || name.contains('(') */ {
             continue;
         }
         defs.push((name.to_string(), value.map(|s| s.to_string())));
@@ -258,6 +258,11 @@ fn builtin_defines() -> Vec<(String, Option<String>)> {
 
 /// Perl Config.pm から設定を取得
 pub fn get_perl_config() -> Result<PerlConfig, PerlConfigError> {
+    // Helper function that converts function-like macros into just their name
+    fn bare(name: &str) -> &str {
+        name.split('(').next().unwrap_or(name)
+    }
+
     // インクルードパスを取得
     let incpth = get_config_value("incpth")?;
     let mut include_paths = parse_incpth(&incpth);
@@ -290,7 +295,8 @@ pub fn get_perl_config() -> Result<PerlConfig, PerlConfigError> {
     // Add the compiler's built-in defines (_WIN32 / __MINGW32__/ __GNUC__, etc.).
     // Explicit definitions (cppsymbols / ccopts) take precedence.
     for (name, value) in builtin_defines() {
-        if !defines.iter().any(|(n, _)| n == &name) {
+        let bare_name = bare(name.as_str());
+        if !defines.iter().any(|(n, _)| bare(n.as_str()) == bare_name) {
             defines.push((name, value));
         }
     }

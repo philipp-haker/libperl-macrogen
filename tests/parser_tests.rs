@@ -62,6 +62,44 @@ fn has_type_spec(decl: &ExternalDecl, check: impl Fn(&TypeSpec) -> bool) -> bool
 }
 
 #[test]
+fn test_extension_compound_literal_and_cast() {
+    let src = r#"
+        typedef float v4 __attribute__((__vector_size__(16)));
+        v4 f(void) { return __extension__ (v4){ 0.0f, 0.0f, 0.0f, 0.0f }; }
+        long long g(int x) { return __extension__ (long long)x; }
+    "#;
+    let decls = parse(src);
+    assert_eq!(decls.len(), 3);
+}
+
+#[test]
+fn test_attribute_leading_type_name() {
+    let src = r#"
+        int f(void) { return sizeof(__attribute__((__vector_size__(16))) int); }
+        void g(void) { (__attribute__((__vector_size__(16))) int){4, 1, 2, 3}; }
+    "#;
+    let decls = parse(src);
+    assert_eq!(decls.len(), 2);
+}
+
+#[test]
+ fn test_builtin_bf16_type() {
+       let src = r#"
+           typedef __bf16 v8bf __attribute__ ((__vector_size__ (16)));
+           __bf16 f(__bf16 x);
+       "#;
+       let decls = parse(src);
+       assert_eq!(decls.len(), 2);
+   }
+
+#[test]
+fn test_attribute_after_pointer() {
+    // e.g. mingw-w64: `extern int *__cdecl _errno(void);` with __cdecl = __attribute__((__cdecl__))
+    let decls = parse("extern int * __attribute__((__cdecl__)) _errno(void);");
+    assert_eq!(decls.len(), 1);
+}
+
+#[test]
 fn test_simple_variable() {
     let decls = parse("int x;");
     assert_eq!(decls.len(), 1);

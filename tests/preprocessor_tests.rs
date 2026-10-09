@@ -61,6 +61,30 @@ fn test_multi_character_char_acc_and_overflow() {
     }
 }
 
+// GCC extended float suffixes (_FloatN, _FloatNx, __bf16, __float128, __float80)
+#[test]
+fn test_float_extended_suffixes() {
+    for input in ["0.0f16", "1.5f32", "1.5f64x", "2.0f128", "2.0bf16", "1.0q", "1.0W", "1.0e3f32"] {
+        let mut pp = preprocess(input);
+        let kinds = token_kinds(&mut pp);
+        assert_eq!(kinds.len(), 1, "{input} should be a single token: {kinds:?}");
+        assert!(matches!(kinds[0], TokenKind::FloatLit(_)), "{input}: {kinds:?}");
+    }
+}
+
+#[test]
+fn test_hex_float_literals() {
+    for (input, expected) in [
+        ("0x1.8p3", TokenKind::FloatLit(12.0)),
+        ("0x1p-1f", TokenKind::FloatLit(0.5)),
+        ("0x1.0p32767Q", TokenKind::FloatLit(f64::INFINITY)), // HUGE_VALQ (quadmath.h)
+        ("0x10", TokenKind::IntLit(16)),
+    ] {
+        let mut pp = preprocess(input);
+        assert_eq!(token_kinds(&mut pp).as_slice(), &[expected], "{input}");
+    }
+}
+
 #[test]
 fn test_simple_tokens() {
     let mut pp = preprocess("int x;");
