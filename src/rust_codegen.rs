@@ -756,6 +756,9 @@ fn is_sv_subtype_cast(from: &UnifiedType, to: &UnifiedType) -> bool {
     const SV_SUBTYPES: &[&str] = &[
         "GV", "HV", "AV", "CV", "IO", "p5rx", "REGEXP",
         "gv", "hv", "av", "cv", "io", "regexp",
+        // `typedef AV PAD;` (pad.h).
+        //PADLIST/PADNAMELIST/PADNAME are separate structs, not SVs, so they must not be listed here.
+        "PAD",
     ];
     let sv_like = |n: &str| n == "SV" || n == "sv";
     // SV ↔ サブタイプ（双方向）
@@ -804,18 +807,18 @@ fn normalize_integer_type(ty: &str) -> Option<&'static str> {
         // IV (i64) 相当だが、bindings.rs の型に合わせて i32 として扱う。
         "Stack_off_t" => Some("i32"),
         "c_long" => {
-            if *IS_WINDOWS_TARGET {
-                Some("i32")
+            Some(if *IS_WINDOWS_TARGET {
+                "i32"
             } else {
-                Some("i64")
-            }
+                "i64"
+            })
         },
         "c_ulong" => {
-            if *IS_WINDOWS_TARGET {
-                Some("u32")
+            Some(if *IS_WINDOWS_TARGET {
+                "u32"
             } else {
-                Some("u64")
-            }
+                "u64"
+            })
         },
         _ => None,
     }
