@@ -17,6 +17,15 @@ use crate::syn_codegen::normalize_parens;
 use crate::unified_type::UnifiedType;
 use crate::sexp::SexpPrinter;
 
+static IS_WINDOWS_TARGET: std::sync::LazyLock<bool> = std::sync::LazyLock::new(is_windows_target);
+
+/// Check to use instead of #[cfg(windows)].
+/// cfg checks host, not target platform, so cross-compile would be wrong.
+/// If the environment is not found, the hosts platform will be used as fallback.
+fn is_windows_target() -> bool {
+    std::env::var_os("CARGO_CFG_TARGET_OS").map_or(cfg!(windows), |target_os| target_os == "windows")
+}
+
 /// bindings.rs から抽出した codegen 用情報
 #[derive(Debug, Default, Clone)]
 pub struct BindingsInfo {
@@ -783,17 +792,31 @@ fn normalize_integer_type(ty: &str) -> Option<&'static str> {
         "u8" | "U8" | "c_uchar" => Some("u8"),
         "u16" | "U16" | "c_ushort" => Some("u16"),
         "u32" | "U32" | "c_uint" => Some("u32"),
-        "u64" | "U64" | "UV" | "c_ulong" | "c_ulonglong"
+        "u64" | "U64" | "UV" | "c_ulonglong"
             | "PERL_UINTMAX_T" => Some("u64"),
         "i8" | "I8" | "c_schar" | "c_char" => Some("i8"),
         "i16" | "I16" | "c_short" => Some("i16"),
         "i32" | "I32" | "c_int" => Some("i32"),
-        "i64" | "I64" | "IV" | "c_long" | "c_longlong" => Some("i64"),
+        "i64" | "I64" | "IV" | "c_longlong" => Some("i64"),
         "usize" | "STRLEN" => Some("usize"),
         "isize" | "SSize_t" | "ssize_t" | "PADOFFSET" => Some("isize"),
         // Perl 固有の整数 typedef。Stack_off_t は 5.32+ で I32、それ以前は
         // IV (i64) 相当だが、bindings.rs の型に合わせて i32 として扱う。
         "Stack_off_t" => Some("i32"),
+        "c_long" => {
+            if *IS_WINDOWS_TARGET {
+                Some("i32")
+            } else {
+                Some("i64")
+            }
+        },
+        "c_ulong" => {
+            if *IS_WINDOWS_TARGET {
+                Some("u32")
+            } else {
+                Some("u64")
+            }
+        },
         _ => None,
     }
 }
@@ -4560,7 +4583,9 @@ impl<'a> RustCodegen<'a> {
             let na = normalize_integer_type(actual);
             let ne = normalize_integer_type(expected_ty);
             if let (Some(a), Some(e)) = (na, ne) {
-                if !integer_types_compatible(a, e) {
+                // Rust never converts between isize/i64 or usize/u64 implicitly,
+                // so any difference needs a cast.
+                if a != e {
                     return cast_syn_expr(arg_expr, e);
                 }
                 return arg_expr;
@@ -5034,7 +5059,9 @@ impl<'a> RustCodegen<'a> {
             }
         }
         if let (Some(nr), Some(ne)) = (normalize_integer_type(&ret_s), normalize_integer_type(&expr_s)) {
-            if !integer_types_compatible(nr, ne) {
+            // Rust never converts between isize/i64 or usize/u64 implicitly,
+            // so any difference needs a cast.
+            if nr != ne {
                 return crate::syn_codegen::cast_syn_expr(syn_expr, nr);
             }
         }
@@ -5642,7 +5669,9 @@ impl<'a> RustCodegen<'a> {
                             let nd = normalize_integer_type(&decl_s);
                             let ne = normalize_integer_type(&expr_s);
                             if let (Some(d), Some(e)) = (nd, ne) {
-                                if !integer_types_compatible(d, e) {
+                                // Rust never converts between isize/i64 or usize/u64 implicitly,
+                                // so any difference needs a cast.
+                                if d != e {
                                     init_syn = crate::syn_codegen::cast_syn_expr(init_syn, d);
                                 }
                             }
